@@ -1,0 +1,201 @@
+@page "/"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@inject IConfiguration Configuration
+
+<PageTitle>SignalR Chat</PageTitle>
+
+<main class="page">
+    <section class="chat-card">
+        <header class="top">
+            <div>
+                <p class="eyebrow">COMUNICACION EN TIEMPO REAL</p>
+                <h1>SignalR Chat</h1>
+                <p class="subtitle">Conversa con otros usuarios conectados.</p>
+            </div>
+            <span class="status @(_connected ? "online" : "offline")">
+                <span class="dot"></span>@_status
+            </span>
+        </header>
+
+        <div class="controls">
+            <label>
+                Tu nombre
+                <input @bind="_user" maxlength="40" placeholder="Escribe tu nombre" />
+            </label>
+            <label>
+                Sala
+                <select @bind="_room">
+                    <option value="Desarrollo">Desarrollo</option>
+                    <option value="Diseno">Diseno</option>
+                </select>
+            </label>
+            <button class="join" @onclick="JoinRoom" disabled="@(!_connected)">Entrar a la sala</button>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(_notice))
+        {
+            <p class="notice">@_notice</p>
+        }
+
+        <section class="messages">
+            <div class="messages-heading">
+                <div>
+                    <h2>@(_joinedRoom ?? "Selecciona una sala")</h2>
+                    <span>@_messages.Count mensajes recibidos</span>
+                </div>
+                <span class="room-tag">CHAT EN VIVO</span>
+            </div>
+
+            @if (_messages.Count == 0)
+            {
+                <div class="empty">
+                    <div class="empty-icon">✦</div>
+                    <strong>Aun no hay mensajes</strong>
+                    <p>Entra a una sala y comienza la conversacion.</p>
+                </div>
+            }
+            else
+            {
+                <div class="message-list">
+                    @foreach (var item in _messages)
+                    {
+                        <article class="message">
+                            <div class="avatar">@item.User[..1].ToUpperInvariant()</div>
+                            <div class="message-content">
+                                <div class="message-meta">
+                                    <strong>@item.User</strong>
+                                    <time>@item.SentAt.ToLocalTime().ToString("HH:mm")</time>
+                                </div>
+                                <p>@item.Message</p>
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+
+        <div class="composer">
+            <input @bind="_message" @bind:event="oninput" @onkeydown="HandleKey" maxlength="500"
+                   placeholder="Escribe tu mensaje..." disabled="@(!_connected || _joinedRoom is null)" />
+            <button @onclick="Send" disabled="@(!_connected || _joinedRoom is null)">Enviar <span>➤</span></button>
+        </div>
+        <footer>Los mensajes se comparten con los usuarios de la misma sala.</footer>
+    </section>
+</main>
+
+@code {
+    private HubConnection? _connection;
+    private readonly List<ChatMessage> _messages = [];
+    private string _user = "";
+    private string _message = "";
+    private string _room = "Desarrollo";
+    private string? _joinedRoom;
+    private string _status = "Desconectado";
+    private string? _notice;
+    private bool _connected;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            await Connect();
+    }
+
+    private async Task Connect()
+    {
+        try
+        {
+            var hubUrl = Configuration["SignalR:HubUrl"] ?? "http://localhost:7001/chatHub";
+            _connection = new HubConnectionBuilder()
+                .WithUrl(hubUrl)
+                .WithAutomaticReconnect()
+                .Build();
+
+            _connection.On<ChatMessage>("ReceiveMessage", message =>
+            {
+                _messages.Add(message);
+                return InvokeAsync(StateHasChanged);
+            });
+
+            _connection.Reconnecting += error => InvokeAsync(() =>
+            {
+                _connected = false;
+                _joinedRoom = null;
+                _status = "Reconectando";
+                StateHasChanged();
+            });
+
+            _connection.Reconnected += id => InvokeAsync(() =>
+            {
+                _connected = true;
+                _joinedRoom = null;
+                _status = "Conectado";
+                StateHasChanged();
+            });
+
+            await _connection.StartAsync();
+            _connected = true;
+            _status = "Conectado";
+        }
+        catch (Exception ex)
+        {
+            _status = "Sin conexion";
+            _notice = $"No se pudo conectar con el servidor: {ex.Message}";
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task JoinRoom()
+    {
+        if (_connection is null || !_connected)
+            return;
+
+        try
+        {
+            await _connection.InvokeAsync("UnirseASala", _room);
+            _joinedRoom = _room;
+            _messages.Clear();
+            _notice = $"Te uniste a la sala {_room}.";
+        }
+        catch (Exception ex)
+        {
+            _notice = ex.Message;
+        }
+    }
+
+    private async Task Send()
+    {
+        if (_connection is null || _joinedRoom is null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_user) || string.IsNullOrWhiteSpace(_message))
+        {
+            _notice = "Escribe tu nombre y un mensaje antes de enviar.";
+            return;
+        }
+
+        try
+        {
+            await _connection.InvokeAsync("SendMessage", _joinedRoom, _user, _message);
+            _message = "";
+            _notice = null;
+        }
+        catch (Exception ex)
+        {
+            _notice = ex.Message;
+        }
+    }
+
+    private async Task HandleKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await Send();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_connection is not null)
+            await _connection.DisposeAsync();
+    }
+}
