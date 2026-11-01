@@ -3,7 +3,7 @@ using SignalR.Shared.Contracts;
 
 namespace SignalR.Hub.Hubs;
 
-public sealed class ChatHub : Hub
+public sealed class ChatHub : Microsoft.AspNetCore.SignalR.Hub
 {
     private static readonly HashSet<string> SalasPermitidas =
         new(StringComparer.OrdinalIgnoreCase) { "Desarrollo", "Diseno" };
